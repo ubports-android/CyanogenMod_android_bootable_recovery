@@ -289,6 +289,9 @@ really_install_package(const char *path, int* wipe_cache)
 
     ui->Print("Opening update package...\n");
 
+    int err;
+
+    /* Disabled to allow easy deploy for phablet
     int numKeys;
     RSAPublicKey* loadedKeys = load_keys(PUBLIC_KEYS_FILE, &numKeys);
     if (loadedKeys == NULL) {
@@ -302,7 +305,6 @@ really_install_package(const char *path, int* wipe_cache)
     ui->SetProgressType(RecoveryUI::DETERMINATE);
     ui->ShowProgress(VERIFICATION_PROGRESS_FRACTION, VERIFICATION_PROGRESS_TIME);
 
-    int err;
     err = verify_file(path, loadedKeys, numKeys);
     free(loadedKeys);
     LOGI("verify_file returned %d\n", err);
@@ -310,6 +312,7 @@ really_install_package(const char *path, int* wipe_cache)
         LOGE("signature verification failed\n");
         return INSTALL_CORRUPT;
     }
+    */
 
     /* Try to open the package.
      */

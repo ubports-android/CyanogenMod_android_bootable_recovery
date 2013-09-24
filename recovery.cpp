@@ -50,14 +50,19 @@ struct selabel_handle *sehandle;
 static const struct option OPTIONS[] = {
   { "send_intent", required_argument, NULL, 's' },
   { "update_package", required_argument, NULL, 'u' },
+  { "user_data_update_package", required_argument, NULL, 'd' },
   { "wipe_data", no_argument, NULL, 'w' },
   { "wipe_cache", no_argument, NULL, 'c' },
   { "show_text", no_argument, NULL, 't' },
+  { "update-ubuntu", no_argument, NULL, 'v' },
   { "just_exit", no_argument, NULL, 'x' },
   { "locale", required_argument, NULL, 'l' },
   { NULL, 0, NULL, 0 },
 };
 
+static const char *UBUNTU_COMMAND_FILE = "/cache/recovery/ubuntu_command";
+static const char *UBUNTU_ARGUMENT = "--update-ubuntu";
+static const char *UBUNTU_UPDATE_SCRIPT = "/sbin/system-image-upgrader";
 static const char *COMMAND_FILE = "/cache/recovery/command";
 static const char *INTENT_FILE = "/cache/recovery/intent";
 static const char *LOG_FILE = "/cache/recovery/log";
@@ -69,6 +74,8 @@ static const char *SDCARD_ROOT = "/sdcard";
 static const char *TEMPORARY_LOG_FILE = "/tmp/recovery.log";
 static const char *TEMPORARY_INSTALL_FILE = "/tmp/last_install";
 static const char *SIDELOAD_TEMP_DIR = "/tmp/sideload";
+static const char *AUTODEPLOY_PACKAGE_FILE = "/sdcard/autodeploy.zip";
+static const char *AUTODEPLOY_PACKAGE_FILE_MULTI = "/sdcard/0/autodeploy.zip";
 
 RecoveryUI* ui = NULL;
 char* locale = NULL;
@@ -191,6 +198,23 @@ get_args(int *argc, char ***argv) {
             LOGI("Got arguments from boot message\n");
         } else if (boot.recovery[0] != 0 && boot.recovery[0] != 255) {
             LOGE("Bad boot message\n\"%.20s\"\n", boot.recovery);
+        }
+    }
+
+    // ----if that doesn't work, try Ubuntu command file
+    if (*argc <= 1) {
+        FILE *fp = fopen_path(UBUNTU_COMMAND_FILE, "r");
+        if (fp != NULL) {
+            // there is Ubuntu command file, use it
+            // there is no need to read file content for now
+            check_and_fclose(fp, UBUNTU_COMMAND_FILE);
+            char *argv0 = (*argv)[0];
+            *argv = (char **) malloc(sizeof(char *) * MAX_ARGS);
+            // store arguments
+            (*argv)[0] = argv0;  // use the same program name
+            (*argv)[1] = (char *)UBUNTU_ARGUMENT;
+            *argc = 2;
+            LOGI("Got arguments from %s\n", UBUNTU_COMMAND_FILE);
         }
     }
 
@@ -784,6 +808,24 @@ print_property(const char *key, const char *name, void *cookie) {
 }
 
 static void
+try_autodeploy(const char *path) {
+    int status = INSTALL_SUCCESS;
+    int wipe_cache = 0;
+
+    ensure_path_mounted(path);
+    if(access(path, F_OK) != -1) {
+        status = install_package(path, &wipe_cache, TEMPORARY_INSTALL_FILE);
+        if (status != INSTALL_SUCCESS) ui->Print("Installation aborted.\n");
+        if (unlink(path) && errno != ENOENT) {
+                LOGW("Can't unlink %s\n", path);
+        }
+        finish_recovery(NULL);
+        sync();
+        android_reboot(ANDROID_RB_RESTART, 0, 0);
+    }
+}
+
+static void
 load_locale_from_cache() {
     FILE* fp = fopen_path(LOCALE_FILE, "r");
     char buffer[80];
@@ -830,8 +872,15 @@ main(int argc, char **argv) {
     int previous_runs = 0;
     const char *send_intent = NULL;
     const char *update_package = NULL;
+    const char *update_ubuntu_package = NULL;
+    const char *user_data_update_package = NULL;
     int wipe_data = 0, wipe_cache = 0, show_text = 0;
     bool just_exit = false;
+
+    ui->Print("Checking for autodeploy.zip\n");
+    try_autodeploy(AUTODEPLOY_PACKAGE_FILE);
+    try_autodeploy(AUTODEPLOY_PACKAGE_FILE_MULTI);
+    ui->Print("autodeploy.zip not found.\n");
 
     int arg;
     while ((arg = getopt_long(argc, argv, "", OPTIONS, NULL)) != -1) {
@@ -839,9 +888,11 @@ main(int argc, char **argv) {
         case 'p': previous_runs = atoi(optarg); break;
         case 's': send_intent = optarg; break;
         case 'u': update_package = optarg; break;
+        case 'd': user_data_update_package = optarg; break;
         case 'w': wipe_data = wipe_cache = 1; break;
         case 'c': wipe_cache = 1; break;
         case 't': show_text = 1; break;
+        case 'v': update_ubuntu_package = UBUNTU_UPDATE_SCRIPT; break;
         case 'x': just_exit = true; break;
         case 'l': locale = optarg; break;
         case '?':
@@ -913,6 +964,16 @@ main(int argc, char **argv) {
             }
         }
         if (status != INSTALL_SUCCESS) ui->Print("Installation aborted.\n");
+    } else if (update_ubuntu_package != NULL) {
+        LOGI("Performing Ubuntu update");
+        ui->SetBackground(RecoveryUI::INSTALLING_UPDATE);
+        //ui_show_indeterminate_progress();
+        ui->Print("Installing Ubuntu update.\n");
+        char tmp[PATH_MAX];
+        sprintf(tmp, "%s %s", UBUNTU_UPDATE_SCRIPT, UBUNTU_COMMAND_FILE );
+        //FIXME: __system(tmp);
+        LOGI("Ubuntu update complete");
+        ui->Print("Ubuntu update complete.\n");
     } else if (wipe_data) {
         if (device->WipeData()) status = INSTALL_ERROR;
         if (erase_volume("/data")) status = INSTALL_ERROR;
@@ -924,6 +985,11 @@ main(int argc, char **argv) {
     } else if (!just_exit) {
         status = INSTALL_NONE;  // No command specified
         ui->SetBackground(RecoveryUI::NO_COMMAND);
+    }
+
+    if (user_data_update_package != NULL) {
+        status = install_package(user_data_update_package, &wipe_cache, TEMPORARY_INSTALL_FILE);
+        if (status != INSTALL_SUCCESS) ui->Print("Installation aborted.\n");
     }
 
     if (status == INSTALL_ERROR || status == INSTALL_CORRUPT) {
